@@ -1,0 +1,23 @@
+tradr/
+├── src/
+│   ├── core/
+│   │   ├── __init__.py
+│   │   └── config.py              # API keys & URLs
+│   │
+│   └── data/
+│       ├── providers/
+│       │   ├── __init__.py
+│       │   ├── news_providers.py       # NewsAPI, Guardian, etc.
+│       │   └── price_providers.py      # Alpha Vantage, Finnhub, Polygon
+│       │
+│       ├── news/
+│       │   ├── __init__.py
+│       │   └── news_fetcher.py         # Main news fetching logic
+│       │
+│       └── prices/
+│           ├── __init__.py
+│           └── price_fetcher.py        # Main price fetching logic
+│
+├── .env.example
+├── requirements.txt
+└── README.md
