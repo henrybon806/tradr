@@ -21,3 +21,6 @@ class Config:
     
     POLYGON_KEY = os.getenv("POLYGON_KEY")
     POLYGON_BASE_URL = "https://api.polygon.io/v1"
+    
+    # AI Models
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
