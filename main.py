@@ -2,7 +2,6 @@ from fastapi import FastAPI
 from src.api.routes import account, orders, positions, market
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
-import os
 import threading
 
 from src.trading.risk_manager import RiskManager

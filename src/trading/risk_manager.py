@@ -14,5 +14,5 @@ class RiskManager():
         self.recent_news = self.news_fetcher.fetch_trending_news()
         print(self.recent_news)
         
-    def analyze_news(self):
+    # def analyze_news(self):
         

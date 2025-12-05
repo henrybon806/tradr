@@ -1,5 +1,5 @@
 from src.core.config import Config
-from src.database import simple_db
+# from src.database import simple_db
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce, OrderType
@@ -10,7 +10,7 @@ from alpaca.data.timeframe import TimeFrame
 
 class TraderClient:
     def __init__(self):
-        self.db = simple_db
+        # self.db = simple_db
         self.portfolio = {}
 
         self.trading_client = TradingClient(
