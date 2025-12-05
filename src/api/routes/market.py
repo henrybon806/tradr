@@ -1,9 +1,8 @@
 from fastapi import APIRouter, Query
-from src.trading.client import TraderClient
 from alpaca.data.timeframe import TimeFrame
+from main import agent
 
 router = APIRouter()
-agent = TraderClient()
 
 @router.get("/bars/{symbol}")
 def get_bars(

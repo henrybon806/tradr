@@ -1,8 +1,7 @@
 from fastapi import APIRouter
-from src.trading.client import TraderClient
+from main import agent
 
 router = APIRouter()
-agent = TraderClient()
 
 @router.get("/")
 def get_positions():

@@ -5,8 +5,8 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import os
 import threading
-import time
 
+# Global agent instance
 agent = TraderClient()
 
 app = FastAPI(

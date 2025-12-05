@@ -1,9 +1,8 @@
 from fastapi import APIRouter
-from src.trading.client import TraderClient
 from pydantic import BaseModel
+from main import agent
 
 router = APIRouter()
-agent = TraderClient()
 
 class OrderRequest(BaseModel):
     symbol: str
