@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Query
-from main import agent
+from src.agent import agent
 
 router = APIRouter()
 

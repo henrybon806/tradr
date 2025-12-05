@@ -1,13 +1,11 @@
 from fastapi import FastAPI
-from src.trading.client import TraderClient
 from src.api.routes import account, orders, positions, market
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import os
 import threading
 
-# Global agent instance
-agent = TraderClient()
+from src.trading.risk_manager import RiskManager
 
 app = FastAPI(
     title="Trading Engine API",
@@ -40,17 +38,11 @@ def root():
 
 def run_trading_logic():
     """Your trading code runs here in background thread"""
-    # while True:
-    #     try:
-    #         # Add your trading logic here
-    #         # Example: check positions, make decisions, etc.
-    #         time.sleep(60)  # Run every minute
-    #     except Exception as e:
-    #         print(f"Trading logic error: {e}")
-    #         time.sleep(60)
+    risk_manager = RiskManager()
+    # risk_manager.check_news()
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 8000))
+    port = 8000
     
     # Start trading logic in background thread
     trading_thread = threading.Thread(target=run_trading_logic, daemon=True)

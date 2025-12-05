@@ -6,13 +6,8 @@ Functions:
 - fetch_trending_news()
 """
 
-import sys
-import os
 import requests
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from ...core.config import Config
+from src.core.config import Config
 
 class NewsFetcher:
     """Fetch financial news from NewsAPI"""

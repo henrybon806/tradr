@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Query
 from alpaca.data.timeframe import TimeFrame
-from main import agent
+from src.agent import agent
 
 router = APIRouter()
 
