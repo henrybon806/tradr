@@ -1,5 +1,5 @@
 from src.core.config import Config
-# from src.database import simple_db
+from src.database import simple_db
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce, OrderType
@@ -98,7 +98,41 @@ class TraderClient:
         return output
 
     def get_orders(self, status="all"):
-        orders = self.trading_client.get_orders(status=status)
+        """Get orders with optional status filter (all, open, closed, etc.)"""
+        try:
+            orders = self.trading_client.get_orders(status=status)
+        except TypeError:
+            # Fallback for older SDK versions that don't support status parameter
+            orders = self.trading_client.get_orders()
+            if status != "all":
+                # Filter by status manually
+                orders = [o for o in orders if o.status == status]
+        
+        output = []
+        for o in orders:
+            output.append({
+                "id": o.id,
+                "symbol": o.symbol,
+                "qty": float(o.qty),
+                "filled_qty": float(o.filled_qty),
+                "side": o.side,
+                "type": o.type,
+                "status": o.status,
+                "limit_price": float(o.limit_price) if o.limit_price else None,
+                "submitted_at": str(o.submitted_at),
+                "filled_at": str(o.filled_at) if o.filled_at else None,
+            })
+        return output
+    
+    def get_pending_orders(self):
+        """Get only open/pending orders (not filled or cancelled)"""
+        try:
+            orders = self.trading_client.get_orders(status="open")
+        except TypeError:
+            # Fallback: get all orders and filter
+            all_orders = self.trading_client.get_orders()
+            orders = [o for o in all_orders if o.status in ["pending_new", "accepted", "pending_cancel", "pending_replace", "new", "partially_filled"]]
+        
         output = []
         for o in orders:
             output.append({
@@ -164,3 +198,149 @@ class TraderClient:
                 "volume": int(bar.volume)
             })
         return output
+
+    # -----------------------------
+    # ALLOCATION PLAN EXECUTION
+    # -----------------------------
+
+    def execute_allocation_plan(self, allocation_plan: dict) -> dict:
+        """
+        Execute buy/sell actions from an allocation plan and save to database.
+        
+        Args:
+            allocation_plan: dict from generate_cash_allocation_plan() containing:
+                - "actions": list of {symbol, action, quantity, ...}
+                - "cash_available": starting cash
+                - Other metadata
+        
+        Returns:
+            dict with execution results:
+            - "executed_actions": list of successful executions with order IDs
+            - "failed_actions": list of failed executions with errors
+            - "total_bought": total $ spent on buys
+            - "total_sold": total $ proceeds from sells
+            - "orders_placed": count of successful orders
+        """
+        actions = allocation_plan.get("actions", [])
+        executed = []
+        failed = []
+        total_bought = 0
+        total_sold = 0
+        
+        # Execute sells first (frees up capital for buys)
+        sell_actions = [a for a in actions if a["action"] == "sell"]
+        buy_actions = [a for a in actions if a["action"] == "buy"]
+        
+        print(f"\n--- Executing {len(sell_actions)} sell orders ---")
+        for action in sell_actions:
+            symbol = action["symbol"]
+            quantity = action["quantity"]
+            strength = action.get("strength", 0.5)
+            reasoning = action.get("reasoning", "")
+            price_allocation = action.get("price_allocation", 0)
+            
+            try:
+                order = self.market_sell(symbol, quantity)
+                executed.append({
+                    "symbol": symbol,
+                    "action": "sell",
+                    "quantity": quantity,
+                    "order_id": str(order.id),
+                    "status": order.status,
+                    "reasoning": reasoning,
+                    "strength": strength
+                })
+                total_sold += price_allocation
+                
+                # Save to database
+                simple_db.save_action(
+                    symbol=symbol,
+                    action="sell",
+                    quantity=quantity,
+                    strength=strength,
+                    reasoning=reasoning,
+                    price_allocation=price_allocation,
+                    order_id=str(order.id),
+                    status=order.status
+                )
+                
+                print(f"✓ SELL {quantity} {symbol} @ market (Order: {order.id})")
+            except Exception as e:
+                failed.append({
+                    "symbol": symbol,
+                    "action": "sell",
+                    "quantity": quantity,
+                    "error": str(e),
+                    "reasoning": reasoning
+                })
+                print(f"✗ SELL {quantity} {symbol} FAILED: {e}")
+        
+        print(f"\n--- Executing {len(buy_actions)} buy orders ---")
+        for action in buy_actions:
+            symbol = action["symbol"]
+            quantity = action["quantity"]
+            strength = action.get("strength", 0.5)
+            reasoning = action.get("reasoning", "")
+            category = action.get("category", "unknown")
+            price_allocation = action.get("price_allocation", 0)
+            
+            try:
+                order = self.market_buy(symbol, quantity)
+                executed.append({
+                    "symbol": symbol,
+                    "action": "buy",
+                    "quantity": quantity,
+                    "order_id": str(order.id),
+                    "status": order.status,
+                    "reasoning": reasoning,
+                    "strength": strength,
+                    "category": category
+                })
+                total_bought += price_allocation
+                
+                # Save to database
+                simple_db.save_action(
+                    symbol=symbol,
+                    action="buy",
+                    quantity=quantity,
+                    strength=strength,
+                    reasoning=reasoning,
+                    category=category,
+                    price_allocation=price_allocation,
+                    order_id=str(order.id),
+                    status=order.status
+                )
+                
+                print(f"✓ BUY {quantity} {symbol} @ market (Order: {order.id})")
+            except Exception as e:
+                failed.append({
+                    "symbol": symbol,
+                    "action": "buy",
+                    "quantity": quantity,
+                    "error": str(e),
+                    "reasoning": reasoning
+                })
+                print(f"✗ BUY {quantity} {symbol} FAILED: {e}")
+        
+        final_account = self.get_account()
+        
+        result = {
+            "executed_actions": executed,
+            "failed_actions": failed,
+            "total_bought": total_bought,
+            "total_sold": total_sold,
+            "orders_placed": len(executed),
+            "orders_failed": len(failed),
+            "success_rate": len(executed) / (len(executed) + len(failed)) if (len(executed) + len(failed)) > 0 else 0,
+            "final_cash": final_account["cash"],
+            "final_portfolio_value": final_account["portfolio_value"],
+            "summary": f"Executed {len(executed)} orders ({len(buy_actions)} buys, {len(sell_actions)} sells). {len(failed)} failed."
+        }
+        
+        print(f"\n--- Execution Summary ---")
+        print(f"Executed: {len(executed)} orders")
+        print(f"Failed: {len(failed)} orders")
+        print(f"Final Cash: ${final_account['cash']:.2f}")
+        print(f"Portfolio Value: ${final_account['portfolio_value']:.2f}")
+        
+        return result
