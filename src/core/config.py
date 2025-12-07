@@ -25,6 +25,11 @@ class Config:
     # AI Models
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
     
-    #Trading API Keys
+    # Trading API Keys
     ALPACA_API_KEY = os.getenv("ALPACA_API_KEY")
     ALPACA_API_SECRET = os.getenv("ALPACA_API_SECRET")
+    
+    # Supabase Database
+    SUPABASE_URL = os.getenv("SUPABASE_URL")
+    SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+

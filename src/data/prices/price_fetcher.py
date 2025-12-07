@@ -87,3 +87,57 @@ class PriceFetcher:
         }
         response = requests.get(url, params=params)
         return response.json()
+    
+    def prepare_analysis_dataset(self, trader, news_predictions: dict, discovery_symbols: list = None):
+        """
+        Collects all external data needed for RiskManager’s analysis.
+        This function ONLY fetches data — it performs NO analysis.
+
+        Returns a dict:
+
+        {
+            "portfolio": {
+                "AAPL": {"history": <daily_history>},
+                "TSLA": {"history": <daily_history>},
+                ...
+            },
+            "news_only": {
+                "NVDA": {"history": <daily_history>},
+                ...
+            },
+            "discovery": {
+                "IBM": {"history": <daily_history>},
+                ...
+            }
+        }
+        """
+
+        dataset = {
+            "portfolio": {},
+            "news_only": {},
+            "discovery": {}
+        }
+
+        positions = trader.get_positions()
+        portfolio_symbols = [p["symbol"] for p in positions]
+
+        for symbol in portfolio_symbols:
+            history = self.get_daily_prices_alpha_vantage(symbol)
+            dataset["portfolio"][symbol] = {"history": history}
+
+        for symbol in news_predictions.keys():
+            if symbol not in portfolio_symbols:
+                history = self.get_daily_prices_alpha_vantage(symbol)
+                dataset["news_only"][symbol] = {"history": history}
+                
+        discovery_symbols = discovery_symbols or []
+
+        for symbol in discovery_symbols:
+            if (
+                symbol not in portfolio_symbols and
+                symbol not in news_predictions
+            ):
+                history = self.get_daily_prices_alpha_vantage(symbol)
+                dataset["discovery"][symbol] = {"history": history}
+
+        return dataset

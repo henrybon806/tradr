@@ -2,7 +2,8 @@
 
 import os
 import json
-from typing import Optional
+import re
+from typing import Any, Dict, List
 import google.generativeai as genai
 from src.core.config import Config
 
@@ -18,83 +19,154 @@ class GeminiQuerier:
         genai.configure(api_key=api_key)
         self.model = genai.GenerativeModel("gemini-2.5-flash")
     
-    def analyze_sentiment(self, text: str) -> dict:
-        """
-        Analyze sentiment of text (news, social media, etc.)
-        Returns: {"sentiment": "positive|negative|neutral", "score": 0.0-1.0, "reasoning": str}
-        """
-        prompt = f"""Analyze the sentiment of the following text about stocks/trading. 
-        Return a JSON response with:
-        - sentiment: "positive", "negative", or "neutral"
-        - score: confidence score from 0.0 to 1.0
-        - reasoning: brief explanation
+    def analyze_sentiment_batch(self, articles: dict) -> dict:
+        # Build article list with numbered indices to avoid key escaping issues
+        articles_list = []
+        article_map_by_index = {}
+        for idx, (title, desc) in enumerate(articles.items()):
+            articles_list.append(f"Article {idx + 1}: {title}\nDescription: {desc}")
+            article_map_by_index[f"article_{idx + 1}"] = title
         
-        Text: {text}
-        
-        Return only valid JSON, no markdown."""
-        
+        merged_text = "\n\n".join(articles_list)
+
+        prompt = f"""Analyze sentiment for the following financial news articles.
+
+Return ONLY a JSON object. Start with {{ and end with }}. No markdown code fences.
+
+For each article, respond with:
+- sentiment: must be exactly "positive", "negative", or "neutral"
+- score: a number between 0 and 1
+- reasoning: a brief one-sentence explanation
+
+News Articles:
+{merged_text}
+
+Respond with this JSON structure:
+{{
+  "article_1": {{
+    "sentiment": "positive",
+    "score": 0.8,
+    "reasoning": "explanation"
+  }},
+  "article_2": {{
+    "sentiment": "negative",
+    "score": 0.3,
+    "reasoning": "explanation"
+  }}
+}}
+
+Start your response with only a curly bracket {{ . No markdown. No commentary."""
+
         response = self.model.generate_content(prompt)
+        raw_text = response.text.strip()
+        
+        # Clean up response
+        if raw_text.startswith("```"):
+            raw_text = raw_text.split("```")[1]
+            if raw_text.startswith("json"):
+                raw_text = raw_text[4:]
+        raw_text = raw_text.strip()
+
         try:
-            return json.loads(response.text)
+            parsed = json.loads(raw_text)
+            # Map back to original titles
+            result = {}
+            for idx, (article_key, original_title) in enumerate(article_map_by_index.items()):
+                if article_key in parsed:
+                    result[original_title] = parsed[article_key]
+                else:
+                    result[original_title] = {
+                        "sentiment": "neutral",
+                        "score": 0.5,
+                        "reasoning": "Missing in response"
+                    }
+            return result
         except json.JSONDecodeError:
             return {
-                "sentiment": "neutral",
-                "score": 0.5,
-                "reasoning": "Could not parse sentiment"
+                title: {
+                    "sentiment": "neutral",
+                    "score": 0.5,
+                    "reasoning": "Could not parse sentiment"
+                }
+                for title in articles
             }
-    
-    def predict_price_movement(self, symbol: str, context: str) -> dict:
-        """
-        Predict price movement based on news/context
-        Returns: {"direction": "up|down|neutral", "confidence": 0.0-1.0, "reasoning": str}
-        """
-        prompt = f"""Based on the following context about {symbol}, predict if the stock price will go up, down, or stay neutral.
-        Return a JSON response with:
-        - direction: "up", "down", or "neutral"
-        - confidence: confidence score from 0.0 to 1.0
-        - reasoning: brief explanation of your prediction
+
+    def predict_price_movement(self, companies: dict, context: str) -> dict:
         
-        Context: {context}
-        
-        Return only valid JSON, no markdown."""
-        
+        prompt = f"""Analyze this financial news context and identify stock trading opportunities.
+
+For each distinct company or stock mentioned, provide:
+- The company name
+- Its stock ticker symbol (or null if unknown)
+- Trading action: buy, sell, or hold
+- Confidence score from 0 to 1
+- Brief reasoning in one sentence
+
+News Context:
+{context}
+
+Respond with ONLY this JSON structure. No markdown code fences. Start with {{ .
+Structure:
+{{
+  "AAPL": {{
+    "name": "Apple",
+    "action": "buy",
+    "confidence": 0.7,
+    "reasoning": "Strong earnings growth"
+  }},
+  "TSLA": {{
+    "name": "Tesla",
+    "action": "hold",
+    "confidence": 0.5,
+    "reasoning": "Mixed signals"
+  }}
+}}
+
+Return ONLY the JSON object. No markdown. No explanations. Start with {{ ."""
+
         response = self.model.generate_content(prompt)
+
         try:
-            return json.loads(response.text)
-        except json.JSONDecodeError:
-            return {
-                "direction": "neutral",
-                "confidence": 0.5,
-                "reasoning": "Could not parse prediction"
-            }
-    
-    def analyze_trading_signal(self, symbol: str, price_history: str, news: str) -> dict:
-        """
-        Comprehensive trading signal analysis
-        Returns: {"action": "buy|sell|hold", "strength": 0.0-1.0, "reasoning": str}
-        """
-        prompt = f"""Analyze the trading signal for {symbol} based on the following information:
+            raw_json = response.candidates[0].content.parts[0].text
+        except (AttributeError, IndexError):
+            raw_json = response.text
         
-        Price History: {price_history}
-        
-        Recent News: {news}
-        
-        Return a JSON response with:
-        - action: "buy", "sell", or "hold"
-        - strength: signal strength from 0.0 to 1.0
-        - reasoning: detailed explanation of the signal
-        
-        Return only valid JSON, no markdown."""
-        
-        response = self.model.generate_content(prompt)
+        # Clean up markdown code fences if present
+        raw_json = raw_json.strip()
+        if raw_json.startswith("```"):
+            raw_json = raw_json.split("```")[1]
+            if raw_json.startswith("json"):
+                raw_json = raw_json[4:]
+        raw_json = raw_json.strip()
+
         try:
-            return json.loads(response.text)
+            data = json.loads(raw_json)
         except json.JSONDecodeError:
-            return {
-                "action": "hold",
-                "strength": 0.5,
-                "reasoning": "Could not parse signal"
-            }
+            return companies
+
+        # Handle both old array format and new dict format
+        if isinstance(data, list):
+            preds = data
+            for item in preds:
+                ticker = item.get("ticker")
+                if ticker:
+                    companies[ticker] = {
+                        "action": item.get("action", "hold"),
+                        "confidence": item.get("confidence", 0.5),
+                        "reasoning": item.get("reasoning"),
+                        "name": item.get("name")
+                    }
+        elif isinstance(data, dict):
+            for ticker, item in data.items():
+                if ticker and ticker != "predictions":
+                    companies[ticker] = {
+                        "action": item.get("action", "hold"),
+                        "confidence": item.get("confidence", 0.5),
+                        "reasoning": item.get("reasoning"),
+                        "name": item.get("name", ticker)
+                    }
+
+        return companies
     
     def summarize_news(self, articles: list) -> str:
         """
@@ -119,22 +191,75 @@ class GeminiQuerier:
         response = self.model.generate_content(prompt)
         return response.text
 
+    def analyze_trading_signal(self, analysis_data: List[Dict[str, Any]]) -> Dict[str, Any]:
+            """
+            Performs comprehensive trading signal analysis for ALL stocks using 
+            ONE single Gemini API call. This function holds the single LLM API call.
+            
+            Args:
+                analysis_data: A list of dicts, each containing 
+                            'symbol', 'category', 'price_history', and 'news'.
 
-if __name__ == "__main__":
-    querier = GeminiQuerier()
-    
-    # Test sentiment analysis
-    sentiment = querier.analyze_sentiment("Apple announced record profits this quarter!")
-    print("Sentiment Analysis:", sentiment)
-    
-    # Test price prediction
-    prediction = querier.predict_price_movement("AAPL", "Strong earnings, tech sector growth")
-    print("\nPrice Prediction:", prediction)
-    
-    # Test trading signal
-    signal = querier.analyze_trading_signal(
-        "TSLA",
-        "Recent price: $250, 52-week range: $200-$300",
-        "Tesla announces new factory, demand remains strong"
-    )
-    print("\nTrading Signal:", signal)
+            Returns:
+                A dict structured by the original category keys.
+            """
+
+            # --- 1. Prompt Construction Phase ---
+            
+            # Use the entire data payload (like the NVDA, SPY, ULTA data you provided)
+            data_json = json.dumps(analysis_data, indent=2)
+            
+            prompt = f"""Analyze stock data and generate trading signals.
+
+You MUST return ONLY valid raw JSON. Do NOT use markdown code fences. Do NOT write explanations.
+
+Stock Analysis Data:
+{data_json}
+
+For each stock, determine:
+- action: "buy", "sell", or "hold"
+- strength: a number from 0.0 to 1.0
+- reasoning: one sentence explanation
+
+Return a JSON object with three keys. Each key maps stock symbols to analysis:
+
+{{
+  "portfolio_signals": {{
+    "AAPL": {{ "action": "buy", "strength": 0.8, "reasoning": "Reason here" }},
+    "TSLA": {{ "action": "hold", "strength": 0.5, "reasoning": "Reason here" }}
+  }},
+  "news_opportunities": {{
+    "NVDA": {{ "action": "buy", "strength": 0.7, "reasoning": "Reason here" }}
+  }},
+  "new_buy_candidates": {{
+    "META": {{ "action": "buy", "strength": 0.6, "reasoning": "Reason here" }}
+  }}
+}}
+
+Return ONLY this JSON. Start with a curly bracket. No markdown. No code fences. No text."""
+            
+            # --- 2. Single API Call Execution Phase ---
+            try:
+                # THIS IS THE SINGLE API CALL
+                response = self.model.generate_content(prompt)
+                raw = response.candidates[0].content.parts[0].text
+                raw = raw.strip()
+                
+                # Clean up any markdown fences that might appear
+                if raw.startswith("```"):
+                    raw = raw.split("```")[1]
+                    if raw.startswith("json"):
+                        raw = raw[4:]
+                raw = raw.strip()
+                
+                model_results = json.loads(raw)
+            except Exception as e:
+                # Fallback for API or JSON parsing failure
+                print(f"API call or JSON parsing failed: {e}")
+                model_results = {
+                    "portfolio_signals": {},
+                    "news_opportunities": {},
+                    "new_buy_candidates": {}
+                }
+            
+            return model_results

@@ -1,176 +1,150 @@
-"""SQLite database for tracking trades and holdings"""
-
-import sqlite3
+import os
 from datetime import datetime
-from pathlib import Path
+from supabase import create_client, Client
+from src.core.config import Config
 
-DB_PATH = Path(__file__).parent.parent.parent / "tradr.db"
+# Initialize Supabase client
+SUPABASE_URL = os.getenv("SUPABASE_URL", getattr(Config, "SUPABASE_URL", ""))
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", getattr(Config, "SUPABASE_KEY", ""))
+
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise ValueError("SUPABASE_URL and SUPABASE_KEY must be set in environment or config")
+
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 def init_db():
-    """Create database tables"""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
-    # Trades table - stores individual buy batches (each purchase is a separate row)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS trades (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            symbol TEXT NOT NULL,
-            date_bought TIMESTAMP,
-            price_at_purchase REAL NOT NULL,
-            quantity INTEGER NOT NULL,
-            date_sold TIMESTAMP,
-            sold BOOLEAN DEFAULT 0
-        )
-    """)
-    
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS balance (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
-            cash REAL NOT NULL
-        )
-    """)
+    """Initialize database - tables are created in Supabase console"""
+    print(f"Connected to Supabase: {SUPABASE_URL}")
+    print("Note: Create 'actions' table in Supabase with: id, timestamp, symbol, action, quantity, strength, reasoning, category, price_allocation, order_id, status")
 
-    cursor.execute("INSERT OR IGNORE INTO balance (id, cash) VALUES (1, 0)")
+def save_action(symbol: str, action: str, quantity: int, strength: float, 
+                reasoning: str, category: str = None, price_allocation: float = None,
+                order_id: str = None, status: str = None) -> int:
+    """
+    Save an executed allocation action to Supabase.
     
-    conn.commit()
-    conn.close()
-    print(f"Database initialized at {DB_PATH}")
-
-def buy(symbol: str, quantity: int, price: float) -> None:
-    """Record a buy trade - creates a new batch entry"""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+    Args:
+        symbol: Stock symbol (e.g., 'AAPL')
+        action: 'buy' or 'sell'
+        quantity: Number of shares
+        strength: Signal strength (0.0-1.0)
+        reasoning: Why this action was taken
+        category: Type of action (portfolio_increase, news_opportunity, new_candidate)
+        price_allocation: Dollar amount allocated/spent
+        order_id: Alpaca order ID
+        status: Order status (filled, pending, etc.)
     
-    # Insert new buy batch
-    cursor.execute("""
-        INSERT INTO trades (symbol, date_bought, price_at_purchase, quantity, sold)
-        VALUES (?, ?, ?, ?, 0)
-    """, (symbol, datetime.now(), price, quantity))
-    
-    # Deduct from cash balance
-    cursor.execute("UPDATE balance SET cash = cash - ?", (quantity * price,))
-    conn.commit()
-    conn.close()
-    
-    print(f"BUY {quantity} {symbol} @ ${price}")
-
-def sell(symbol: str, quantity: int, price: float) -> None:
-    """Record a sell trade - sells from oldest batches first (FIFO)"""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
-    # Get unsold batches for this symbol, ordered by date (FIFO)
-    cursor.execute("""
-        SELECT id, quantity FROM trades 
-        WHERE symbol = ? AND sold = 0
-        ORDER BY date_bought ASC
-    """, (symbol,))
-    batches = cursor.fetchall()
-    
-    remaining_to_sell = quantity
-    
-    # Sell from oldest batches first
-    for batch_id, batch_quantity in batches:
-        if remaining_to_sell <= 0:
-            break
+    Returns:
+        ID of inserted action
+    """
+    try:
+        data = {
+            "symbol": symbol,
+            "action": action,
+            "quantity": quantity,
+            "strength": strength,
+            "reasoning": reasoning,
+            "category": category,
+            "price_allocation": price_allocation,
+            "order_id": order_id,
+            "status": status,
+            "timestamp": datetime.utcnow().isoformat()
+        }
         
-        if batch_quantity <= remaining_to_sell:
-            # Sell entire batch
-            cursor.execute("""
-                UPDATE trades 
-                SET sold = 1, date_sold = ?
-                WHERE id = ?
-            """, (datetime.now(), batch_id))
-            remaining_to_sell -= batch_quantity
+        response = supabase.table("trades").insert(data).execute()
+        
+        if response.data:
+            return response.data[0]["id"]
         else:
-            # Partial sell - split the batch
-            cursor.execute("""
-                UPDATE trades 
-                SET quantity = ?
-                WHERE id = ?
-            """, (batch_quantity - remaining_to_sell, batch_id))
-            
-            # Insert sold portion
-            cursor.execute("""
-                SELECT price_at_purchase FROM trades WHERE id = ?
-            """, (batch_id,))
-            original_price = cursor.fetchone()[0]
-            
-            cursor.execute("""
-                INSERT INTO trades (symbol, date_bought, price_at_purchase, quantity, date_sold, sold)
-                VALUES (?, ?, ?, ?, ?, 1)
-            """, (symbol, cursor.execute("SELECT date_bought FROM trades WHERE id = ?", (batch_id,)).fetchone()[0], 
-                  original_price, remaining_to_sell, datetime.now()))
-            
-            remaining_to_sell = 0
-    
-    # Add proceeds to cash
-    cursor.execute("UPDATE balance SET cash = cash + ?", (quantity * price,))
-    conn.commit()
-    conn.close()
-    
-    print(f"SELL {quantity} {symbol} @ ${price}")
+            print(f"Warning: No response from Supabase insert")
+            return None
+    except Exception as e:
+        print(f"Error saving action to Supabase: {e}")
+        return None
 
-def add_trade(symbol: str, action: str, quantity: int, price: float) -> None:
-    """Add a buy/sell trade (deprecated - use buy() or sell() instead)"""
-    if action.lower() == "buy":
-        buy(symbol, quantity, price)
-    elif action.lower() == "sell":
-        sell(symbol, quantity, price)
-
-def get_all_trades() -> list:
-    """Get all trades (current and closed positions)"""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+def get_all_actions(limit: int = None) -> list:
+    """
+    Get all recorded actions, optionally limited to most recent N.
     
-    cursor.execute("""
-        SELECT id, symbol, date_bought, price_at_purchase, quantity, date_sold, sold
-        FROM trades
-        ORDER BY date_bought
-    """)
-    trades = cursor.fetchall()
-    conn.close()
-    
-    return trades
+    Returns:
+        List of dicts with action data
+    """
+    try:
+        query = supabase.table("trades").select("*").order("timestamp", desc=True)
+        
+        if limit:
+            query = query.limit(limit)
+        
+        response = query.execute()
+        return response.data if response.data else []
+    except Exception as e:
+        print(f"Error fetching actions from Supabase: {e}")
+        return []
 
-def get_holdings() -> list:
-    """Get all current holdings (unsold batches only)"""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
-    cursor.execute("""
-        SELECT id, symbol, date_bought, price_at_purchase, quantity
-        FROM trades 
-        WHERE sold = ?
-        ORDER BY symbol, date_bought
-    """, (False,))
-    holdings = cursor.fetchall()
-    conn.close()
-    
-    return holdings
+def get_actions_by_symbol(symbol: str) -> list:
+    """Get all actions for a specific symbol."""
+    try:
+        response = supabase.table("trades").select("*").eq("symbol", symbol).order("timestamp", desc=True).execute()
+        return response.data if response.data else []
+    except Exception as e:
+        print(f"Error fetching actions by symbol from Supabase: {e}")
+        return []
 
-def get_liquidity() -> float:
-    """Gets the current liquidity available to buy"""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+def get_actions_by_date(start_date: str = None, end_date: str = None) -> list:
+    """Get actions within a date range (format: YYYY-MM-DD)."""
+    try:
+        query = supabase.table("trades").select("*")
+        
+        if start_date and end_date:
+            query = query.gte("timestamp", f"{start_date}T00:00:00").lte("timestamp", f"{end_date}T23:59:59")
+        elif start_date:
+            query = query.gte("timestamp", f"{start_date}T00:00:00")
+        
+        response = query.order("timestamp", desc=True).execute()
+        return response.data if response.data else []
+    except Exception as e:
+        print(f"Error fetching actions by date from Supabase: {e}")
+        return []
 
-    cursor.execute("SELECT cash FROM balance WHERE id = 1")
-    (cash,) = cursor.fetchone()
-
-    conn.close()
-    return cash
-
-def set_balance(amount: float) -> None:
-    """Set the cash balance to a specific amount"""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
-    cursor.execute("UPDATE balance SET cash = ? WHERE id = 1", (amount,))
-    conn.commit()
-    conn.close()
-    
-    print(f"Balance set to ${amount:.2f}")
+def get_action_stats() -> dict:
+    """Get summary statistics of all actions."""
+    try:
+        response = supabase.table("trades").select("*").execute()
+        actions = response.data if response.data else []
+        
+        total_actions = len(actions)
+        total_buys = len([a for a in actions if a["action"] == "buy"])
+        total_sells = len([a for a in actions if a["action"] == "sell"])
+        
+        total_shares_bought = sum(a["quantity"] for a in actions if a["action"] == "buy")
+        total_shares_sold = sum(a["quantity"] for a in actions if a["action"] == "sell")
+        
+        total_bought_value = sum(a.get("price_allocation", 0) or 0 for a in actions if a["action"] == "buy")
+        total_sold_value = sum(a.get("price_allocation", 0) or 0 for a in actions if a["action"] == "sell")
+        
+        return {
+            "total_actions": total_actions,
+            "total_buys": total_buys,
+            "total_sells": total_sells,
+            "total_shares_bought": total_shares_bought,
+            "total_shares_sold": total_shares_sold,
+            "total_bought_value": total_bought_value,
+            "total_sold_value": total_sold_value,
+            "net_capital_deployed": total_bought_value - total_sold_value
+        }
+    except Exception as e:
+        print(f"Error calculating action stats from Supabase: {e}")
+        return {
+            "total_actions": 0,
+            "total_buys": 0,
+            "total_sells": 0,
+            "total_shares_bought": 0,
+            "total_shares_sold": 0,
+            "total_bought_value": 0,
+            "total_sold_value": 0,
+            "net_capital_deployed": 0
+        }
 
 if __name__ == "__main__":
     init_db()
+
